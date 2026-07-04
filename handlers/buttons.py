@@ -19,6 +19,7 @@ from handlers.commands import (
     settings_keyboard,
     manage_users_keyboard,
     user_detail_keyboard,
+    expiry_keyboard,
     is_super_admin,
     is_full_admin,
     is_authorized,
@@ -33,7 +34,7 @@ RESTRICTED_EXACT = {
     "settings_toggle_cleanup", "settings_toggle_summary", "settings_toggle_leave",
     "cat_add_start", "set_category_start", "pending_approvals",
 }
-RESTRICTED_PREFIXES = ("cat_rename_start:", "cat_delete:", "assign_category:", "pending_approve:", "pending_reject:")
+RESTRICTED_PREFIXES = ("cat_rename_start:", "cat_delete:", "assign_category:", "pending_approve:", "pending_reject:", "expiry:")
 
 SUPER_ONLY_PREFIXES = ("manage_users_menu", "add_user_start", "user_info:", "remove_user:")
 
@@ -104,6 +105,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ---------- Universal cancel / back ----------
     if data == "cancel_state":
         context.user_data["state"] = None
+        context.user_data["pending_add_ids"] = []
+        context.user_data["added_count"] = 0
         group_id = context.user_data.get("selected_group")
         if group_id:
             title = storage.get_group_title(group_id)
@@ -329,19 +332,84 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "add_members_start":
         context.user_data["state"] = "adding"
         context.user_data["added_count"] = 0
+        context.user_data["pending_add_ids"] = []
         await safe_edit(query, 
             f"➕ [{title}] Send the User ID you want to add.\n"
             "(e.g.: 5970917123)\n\n"
-            "Each ID will be saved immediately. Press Done once you've sent them all.",
+            "Each ID will be queued. Press Done once you've sent them all, "
+            "then choose how long they should stay whitelisted.",
             reply_markup=done_keyboard()
         )
 
     elif data == "add_done":
-        count = context.user_data.get("added_count", 0)
         context.user_data["state"] = None
-        context.user_data["added_count"] = 0
+        pending = context.user_data.get("pending_add_ids", [])
+        if not pending:
+            await safe_edit(query, 
+                "ℹ️ No new IDs were queued.",
+            )
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="Choose an option to continue:",
+                reply_markup=main_menu_keyboard(is_full, is_super)
+            )
+            return
         await safe_edit(query, 
-            f"🎉 Done! Saved {count} ID(s) for *{title_md}*. Great job! ✅",
+            f"📥 {len(pending)} ID(s) queued for *{title_md}*.\n\n"
+            "Choose how long they should stay whitelisted:",
+            parse_mode="Markdown",
+            reply_markup=expiry_keyboard()
+        )
+
+    elif data.startswith("expiry:"):
+        choice = data.split(":", 1)[1]
+        pending = context.user_data.get("pending_add_ids", [])
+
+        if choice == "discard":
+            context.user_data["pending_add_ids"] = []
+            context.user_data["added_count"] = 0
+            await safe_edit(query, "🗑️ Discarded — nothing was added.")
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="Choose an option to continue:",
+                reply_markup=main_menu_keyboard(is_full, is_super)
+            )
+            return
+
+        if choice == "custom":
+            context.user_data["state"] = "adding_custom_expiry"
+            await safe_edit(query, 
+                "🗓️ Send the expiry date/time in IST, e.g.:\n"
+                "`25-12-2026` or `25-12-2026 23:59`",
+                parse_mode="Markdown",
+                reply_markup=back_only_keyboard()
+            )
+            return
+
+        if not pending:
+            await safe_edit(query, "ℹ️ No new IDs were queued.")
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="Choose an option to continue:",
+                reply_markup=main_menu_keyboard(is_full, is_super)
+            )
+            return
+
+        if choice == "lifetime":
+            expires_at = None
+            expiry_label = "♾️ Lifetime (no expiry)"
+        else:
+            days = int(choice)
+            expires_at = timeutils.now_utc_iso_plus_days(days)
+            expiry_label = f"📅 {days} days"
+
+        storage.add_allowed_ids(group_id, pending, expires_at=expires_at)
+        context.user_data["pending_add_ids"] = []
+        context.user_data["added_count"] = 0
+
+        await safe_edit(query, 
+            f"🎉 Added {len(pending)} ID(s) for *{title_md}*.\n"
+            f"⏳ Expiry: {expiry_label}",
             parse_mode="Markdown"
         )
         await context.bot.send_message(
