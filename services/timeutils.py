@@ -8,6 +8,31 @@ def now_utc_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def now_utc_iso_plus_days(days):
+    """UTC ISO timestamp `days` days from now (used for 7/30/90-day expiry options)."""
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+
+def parse_ist_to_utc_iso(text):
+    """
+    Parses a user-typed date/time (assumed IST) into a UTC ISO string for
+    storage. Accepts "DD-MM-YYYY HH:MM" or just "DD-MM-YYYY" (defaults to
+    23:59 that day). Returns None if the text can't be parsed.
+    """
+    text = text.strip()
+    formats = ["%d-%m-%Y %H:%M", "%d-%m-%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d-%m-%Y"]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(text, fmt)
+            if fmt in ("%d-%m-%Y",):
+                dt = dt.replace(hour=23, minute=59, second=59)
+            dt = dt.replace(tzinfo=IST)
+            return dt.astimezone(timezone.utc).isoformat()
+        except ValueError:
+            continue
+    return None
+
+
 def to_ist_dual(value):
     """
     Converts a stored UTC ISO string (or datetime) into a display string
