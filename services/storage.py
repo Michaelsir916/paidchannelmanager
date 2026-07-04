@@ -1,5 +1,6 @@
 import json
 import os
+import logging
 from datetime import datetime, timezone, timedelta
 from config import (
     ALLOWED_IDS_FILE,
@@ -11,21 +12,70 @@ from config import (
     CATEGORIES_FILE,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _load(path, default):
+    """
+    Load JSON from `path`. If the file is missing, return `default`.
+    If the file exists but is corrupt (e.g. a write got interrupted by a
+    Termux/Android process kill during a network drop), try to recover from
+    the `<path>.bak` file that `_save` keeps around, instead of silently
+    returning an empty default (which used to make whole groups/whitelists
+    "disappear" even though nothing was actually removed).
+    """
     if not os.path.exists(path):
         return default
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, FileNotFoundError):
+        bak_path = path + ".bak"
+        if os.path.exists(bak_path):
+            try:
+                with open(bak_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                logger.warning(
+                    "%s was corrupted - recovered from backup %s", path, bak_path
+                )
+                return data
+            except (json.JSONDecodeError, FileNotFoundError):
+                pass
+        logger.error(
+            "%s is corrupted and no valid backup was found - returning empty data",
+            path,
+        )
         return default
 
 
 def _save(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    """
+    Atomic, crash-safe save:
+    1. Keep a copy of the last good file as `<path>.bak` (best-effort).
+    2. Write the new data to a temp file in the same directory.
+    3. fsync + os.replace() the temp file over the real file.
+    os.replace() is atomic on both Linux/Termux and Android, so a process
+    getting killed mid-write (e.g. Android killing Termux when network
+    toggles) can never leave a half-written/corrupt JSON file behind - the
+    original file stays intact until the new one is fully written.
+    """
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+
+    bak_path = path + ".bak"
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as src, open(bak_path, "wb") as dst:
+                dst.write(src.read())
+        except OSError:
+            pass  # best-effort backup; don't block the real save on this
+
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
 
 
 # ---------- Known groups (every group/channel the bot is currently in) ----------
