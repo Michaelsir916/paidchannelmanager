@@ -3,7 +3,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from services import storage
-from handlers.commands import is_full_admin, is_super_admin, main_menu_keyboard
+from handlers.commands import is_full_admin, is_super_admin, main_menu_keyboard, expiry_keyboard
 
 
 async def handle_bulk_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -31,21 +31,36 @@ async def handle_bulk_document(update: Update, context: ContextTypes.DEFAULT_TYP
     file_bytes = await tg_file.download_as_bytearray()
     text = file_bytes.decode("utf-8", errors="ignore")
 
-    ids = list(set(int(x) for x in re.findall(r"-?\d{4,}", text)))
+    found_ids = list(set(int(x) for x in re.findall(r"-?\d{4,}", text)))
     context.user_data["state"] = None
 
     is_super = is_super_admin(user.id)
 
-    if not ids:
+    if not found_ids:
         await update.message.reply_text(
             "⚠️ No valid User IDs found in that file.",
             reply_markup=main_menu_keyboard(True, is_super)
         )
         return
 
-    storage.add_allowed_ids(group_id, ids)
+    existing = set(storage.get_allowed_ids(group_id))
+    new_ids = [i for i in found_ids if i not in existing]
+    skipped = len(found_ids) - len(new_ids)
+
+    if not new_ids:
+        await update.message.reply_text(
+            f"ℹ️ All {len(found_ids)} ID(s) in that file are *already added* to the whitelist. Nothing new to import.",
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard(True, is_super)
+        )
+        return
+
+    context.user_data["pending_add_ids"] = new_ids
+    skip_line = f"\n⚠️ Skipped {skipped} ID(s) already in the whitelist." if skipped else ""
 
     await update.message.reply_text(
-        f"✅ Imported {len(ids)} unique ID(s) from the file.",
-        reply_markup=main_menu_keyboard(True, is_super)
+        f"📥 Found {len(new_ids)} new ID(s) to import.{skip_line}\n\n"
+        "Choose how long they should stay whitelisted:",
+        parse_mode="Markdown",
+        reply_markup=expiry_keyboard()
     )
