@@ -2,6 +2,6 @@
   "-1003561968240": {
     "leave_notification": true,
     "welcome_message": true,
-    "daily_summary": true
+    "daily_summary": false
   }
 }

@@ -127,6 +127,29 @@ def get_group_owner(chat_id):
     return info.get("owner_id") if info else None
 
 
+def get_group_category(chat_id):
+    data = _load(KNOWN_GROUPS_FILE, {})
+    info = data.get(str(chat_id))
+    return info.get("category_id") if info else None
+
+
+def get_groups_by_category(owner_id, category_id):
+    """
+    All chat_ids owned by `owner_id` that share `category_id`
+    (category_id can be None, meaning the "Uncategorized" bucket).
+    """
+    data = _load(KNOWN_GROUPS_FILE, {})
+    return [
+        int(cid) for cid, info in data.items()
+        if info.get("owner_id") == owner_id and info.get("category_id") == category_id
+    ]
+
+
+def get_groups_by_owner(owner_id):
+    data = _load(KNOWN_GROUPS_FILE, {})
+    return [int(cid) for cid, info in data.items() if info.get("owner_id") == owner_id]
+
+
 # ---------- Managed (delegated) admins ----------
 # Structure: { "<user_id>": {"added_by":..., "started_at": iso, "expires_at": iso|null, "days": int|null} }
 
@@ -196,6 +219,7 @@ _DEFAULT_SETTINGS = {
     "daily_summary": False,
     "auto_cleanup": False,
     "leave_notification": False,
+    "auto_whitelist_minutes": -1,  # -1 = disabled, 0 = instant, N = auto-whitelist N minutes after joining
 }
 
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import time as dtime, timezone, timedelta
 
@@ -72,6 +73,16 @@ def main():
         print("   Install with: pip install \"python-telegram-bot[job-queue]\"")
 
     print("Bot is running...")
+
+    # Python 3.14 no longer auto-creates an event loop on the main thread,
+    # which makes python-telegram-bot's run_polling() crash with
+    # "There is no current event loop in thread 'MainThread'." This creates
+    # one explicitly if needed.
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
     app.run_polling(allowed_updates=["message", "callback_query", "chat_member", "my_chat_member"])
 
 

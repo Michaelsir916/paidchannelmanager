@@ -163,7 +163,8 @@ def main_menu_keyboard(is_full=True, is_super=False):
     if is_full:
         keyboard.append([InlineKeyboardButton("⚙️ Settings", callback_data="settings_menu")])
 
-    keyboard.append([InlineKeyboardButton("🔄 Change Group", callback_data="change_group")])
+    keyboard.append([InlineKeyboardButton("⬅️ Back (Change Group)", callback_data="change_group")])
+    keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="change_group")])
     keyboard.append([InlineKeyboardButton("🆘 Support", callback_data="show_support")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -172,20 +173,6 @@ def done_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Done", callback_data="add_done")],
         [InlineKeyboardButton("⬅️ Back", callback_data="cancel_state")],
-    ])
-
-
-def expiry_keyboard():
-    """Ask how long the newly-queued IDs should stay whitelisted."""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("♾️ Lifetime (no expiry)", callback_data="expiry:lifetime")],
-        [
-            InlineKeyboardButton("7 days", callback_data="expiry:7"),
-            InlineKeyboardButton("30 days", callback_data="expiry:30"),
-            InlineKeyboardButton("90 days", callback_data="expiry:90"),
-        ],
-        [InlineKeyboardButton("📅 Custom date & time", callback_data="expiry:custom")],
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="cancel_state")],
     ])
 
 
@@ -219,14 +206,50 @@ def settings_keyboard(chat_id):
         "grace": f"GRACE ({s['grace_minutes']}m)",
     }
 
+    aw = s["auto_whitelist_minutes"]
+    aw_label = "OFF" if aw < 0 else ("Instant" if aw == 0 else f"after {aw}m")
+
     keyboard = [
-        [InlineKeyboardButton(f"🚨 Auto-kick: {auto_kick_labels[s['auto_kick']]}", callback_data="settings_cycle_autokick")],
+        [InlineKeyboardButton(f"🚨 Auto-Remove: {auto_kick_labels[s['auto_kick']]}", callback_data="autoremove_menu")],
+        [InlineKeyboardButton(f"🆕 Auto-whitelist new joins: {aw_label}", callback_data="settings_cycle_autowhitelist")],
         [InlineKeyboardButton(f"👋 Welcome message: {onoff(s['welcome_message'])}", callback_data="settings_toggle_welcome")],
         [InlineKeyboardButton(f"🚶 Leave notification: {onoff(s['leave_notification'])}", callback_data="settings_toggle_leave")],
         [InlineKeyboardButton(f"🧹 Daily auto-cleanup: {onoff(s['auto_cleanup'])}", callback_data="settings_toggle_cleanup")],
         [InlineKeyboardButton(f"📆 Daily summary: {onoff(s['daily_summary'])}", callback_data="settings_toggle_summary")],
         [InlineKeyboardButton("⬅️ Back", callback_data="back_to_menu")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="cancel_state")],
     ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def auto_remove_keyboard(chat_id):
+    """Auto-Remove is now a full submenu instead of a single cycle-button:
+    a clear master ON/OFF switch, mode selection, grace-period length, and
+    a data-analysis view - all in one place."""
+    s = storage.get_group_settings(chat_id)
+    mode = s["auto_kick"]
+    keyboard = []
+
+    if mode == "off":
+        keyboard.append([InlineKeyboardButton("🟢 Turn ON Auto-Remove (currently OFF)", callback_data="autoremove_enable")])
+    else:
+        label = "INSTANT" if mode == "instant" else f"GRACE ({s['grace_minutes']}m)"
+        keyboard.append([InlineKeyboardButton(f"🔴 Turn OFF Auto-Remove (currently {label})", callback_data="autoremove_disable")])
+        keyboard.append([
+            InlineKeyboardButton(("✅ " if mode == "instant" else "") + "⚡ Instant", callback_data="autoremove_mode:instant"),
+            InlineKeyboardButton(("✅ " if mode == "grace" else "") + "⏳ Grace period", callback_data="autoremove_mode:grace"),
+        ])
+        if mode == "grace":
+            keyboard.append([
+                InlineKeyboardButton("15m", callback_data="autoremove_grace:15"),
+                InlineKeyboardButton("30m", callback_data="autoremove_grace:30"),
+                InlineKeyboardButton("60m", callback_data="autoremove_grace:60"),
+                InlineKeyboardButton("6h", callback_data="autoremove_grace:360"),
+            ])
+
+    keyboard.append([InlineKeyboardButton("📊 Analyze Data", callback_data="autoremove_analyze")])
+    keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="settings_menu")])
+    keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="cancel_state")])
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -548,21 +571,53 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("⚠️ Please send a valid User ID.", reply_markup=back_only_keyboard())
             return
 
-        removed = storage.remove_allowed_id(group_id, rem_id)
         context.user_data["state"] = None
 
-        if removed:
-            await update.message.reply_text(
-                f"✅ ID `{rem_id}` removed from the allowed list.",
-                parse_mode="Markdown",
-                reply_markup=main_menu_keyboard(is_full, is_super)
-            )
+        owner_id = storage.get_group_owner(group_id)
+        cat_id = storage.get_group_category(group_id)
+
+        if owner_id is not None:
+            target_groups = storage.get_groups_by_category(owner_id, cat_id)
         else:
-            await update.message.reply_text(
-                f"ℹ️ ID `{rem_id}` was not found in the allowed list.",
-                parse_mode="Markdown",
-                reply_markup=main_menu_keyboard(is_full, is_super)
-            )
+            target_groups = [group_id]
+        if group_id not in target_groups:
+            target_groups.append(group_id)
+
+        removed_from, not_found_in = [], []
+        for gid in target_groups:
+            if storage.remove_allowed_id(gid, rem_id):
+                removed_from.append(gid)
+            else:
+                not_found_in.append(gid)
+
+        # Check the owner's OTHER groups (outside this category) where the ID
+        # is still whitelisted - these are intentionally left untouched.
+        kept_in = []
+        if owner_id is not None:
+            for gid in storage.get_groups_by_owner(owner_id):
+                if gid in target_groups:
+                    continue
+                if rem_id in storage.get_allowed_ids(gid):
+                    kept_in.append(gid)
+
+        cat_label = storage.get_categories(owner_id).get(cat_id, "Uncategorized") if owner_id else title
+        lines = [f"🏷️ Category scope: *{escape_md(cat_label)}*\n"]
+
+        if removed_from:
+            lines.append(f"✅ Removed ID `{rem_id}` from:")
+            lines += [f"   • {escape_md(storage.get_group_title(gid))}" for gid in removed_from]
+        else:
+            lines.append(f"ℹ️ ID `{rem_id}` was not found in this category's group(s).")
+
+        if kept_in:
+            lines.append(f"\n📌 Left untouched (different category, {len(kept_in)} group(s)):")
+            lines += [f"   • {escape_md(storage.get_group_title(gid))}" for gid in kept_in]
+
+        await update.message.reply_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard(is_full, is_super)
+        )
         return
 
     # ---------- Waiting for a bulk import file, but got text instead ----------

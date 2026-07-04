@@ -42,6 +42,30 @@ async def grace_kick_callback(context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def auto_whitelist_callback(context: ContextTypes.DEFAULT_TYPE):
+    """Runs once, N minutes after a new member joins (if auto-whitelist is
+    enabled for that group). Whitelists them automatically unless they've
+    already left or an admin already handled them."""
+    job = context.job
+    chat_id = job.data["chat_id"]
+    user_id = job.data["user_id"]
+
+    tracked = storage.get_tracked_members(chat_id)
+    if str(user_id) not in tracked:
+        return  # they already left / were removed - nothing to do
+
+    allowed = storage.get_allowed_ids(chat_id)
+    if user_id in allowed:
+        return  # already whitelisted (e.g. admin did it manually)
+
+    storage.add_allowed_ids(chat_id, [user_id])
+    title = escape_md(storage.get_group_title(chat_id))
+    await send_alert(
+        context.bot,
+        f"🆕 Auto-whitelisted user `{user_id}` in *{title}* (auto-whitelist timer)."
+    )
+
+
 async def daily_summary_callback(context: ContextTypes.DEFAULT_TYPE):
     """Runs once a day. Sends a summary for every group with daily_summary enabled."""
     groups = storage.get_known_groups()

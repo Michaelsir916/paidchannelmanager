@@ -4,7 +4,7 @@ from services import storage
 from services.group_service import kick_single_member
 from services.notify import send_alert
 from services.mdutils import escape_md
-from handlers.jobs import grace_kick_callback
+from handlers.jobs import grace_kick_callback, auto_whitelist_callback
 
 ACTIVE_STATUSES = ("member", "administrator", "creator", "restricted")
 INACTIVE_STATUSES = ("left", "kicked")
@@ -70,10 +70,24 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         mode = settings.get("auto_kick", "off")
 
-        if mode == "instant":
+        aw_minutes = settings.get("auto_whitelist_minutes", -1)
+        if aw_minutes >= 0:
+            if aw_minutes == 0:
+                # Instant: whitelist right away, no need to schedule a job.
+                storage.add_allowed_ids(chat.id, [user.id])
+                is_allowed = True
+            elif context.job_queue:
+                context.job_queue.run_once(
+                    auto_whitelist_callback,
+                    when=aw_minutes * 60,
+                    data={"chat_id": chat.id, "user_id": user.id},
+                    name=f"autowhitelist_{chat.id}_{user.id}"
+                )
+
+        if mode == "instant" and not is_allowed:
             await kick_single_member(context.bot, chat.id, user.id, user.username or "")
 
-        elif mode == "grace":
+        elif mode == "grace" and not is_allowed:
             grace_minutes = settings.get("grace_minutes", 60)
             if context.job_queue:
                 context.job_queue.run_once(

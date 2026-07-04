@@ -1,4 +1,5 @@
 import re
+from collections import Counter
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -31,35 +32,56 @@ async def handle_bulk_document(update: Update, context: ContextTypes.DEFAULT_TYP
     file_bytes = await tg_file.download_as_bytearray()
     text = file_bytes.decode("utf-8", errors="ignore")
 
-    found_ids = list(set(int(x) for x in re.findall(r"-?\d{4,}", text)))
+    all_matches = [int(x) for x in re.findall(r"-?\d{4,}", text)]
     context.user_data["state"] = None
-
     is_super = is_super_admin(user.id)
 
-    if not found_ids:
+    if not all_matches:
         await update.message.reply_text(
             "⚠️ No valid User IDs found in that file.",
             reply_markup=main_menu_keyboard(True, is_super)
         )
         return
 
+    # ---- Analyze: how many times each ID repeats *within the file itself* ----
+    counts = Counter(all_matches)
+    found_ids = list(counts.keys())
+    repeated_in_file = {uid: c for uid, c in counts.items() if c > 1}
+
+    # ---- Check against what's already whitelisted for this group ----
     existing = set(storage.get_allowed_ids(group_id))
     new_ids = [i for i in found_ids if i not in existing]
-    skipped = len(found_ids) - len(new_ids)
+    already_whitelisted = len(found_ids) - len(new_ids)
+
+    # ---- Build the analysis report ----
+    report_lines = [
+        f"📊 *Import analysis*",
+        f"• Total ID lines read: {len(all_matches)}",
+        f"• Unique IDs found: {len(found_ids)}",
+    ]
+    if repeated_in_file:
+        dup_list = ", ".join(f"`{uid}`×{c}" for uid, c in list(repeated_in_file.items())[:15])
+        more = f" (+{len(repeated_in_file) - 15} more)" if len(repeated_in_file) > 15 else ""
+        report_lines.append(f"• ⚠️ Duplicate lines in file (auto-merged to 1 each): {len(repeated_in_file)}\n   {dup_list}{more}")
+    else:
+        report_lines.append("• ✅ No duplicate lines found in the file.")
+    if already_whitelisted:
+        report_lines.append(f"• ℹ️ Already on the whitelist (will be skipped): {already_whitelisted}")
+
+    report = "\n".join(report_lines)
 
     if not new_ids:
         await update.message.reply_text(
-            f"ℹ️ All {len(found_ids)} ID(s) in that file are *already added* to the whitelist. Nothing new to import.",
+            report + "\n\nNothing new to import.",
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard(True, is_super)
         )
         return
 
     context.user_data["pending_add_ids"] = new_ids
-    skip_line = f"\n⚠️ Skipped {skipped} ID(s) already in the whitelist." if skipped else ""
 
     await update.message.reply_text(
-        f"📥 Found {len(new_ids)} new ID(s) to import.{skip_line}\n\n"
+        report + f"\n\n📥 Ready to import {len(new_ids)} new ID(s).\n"
         "Choose how long they should stay whitelisted:",
         parse_mode="Markdown",
         reply_markup=expiry_keyboard()

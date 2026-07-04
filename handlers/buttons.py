@@ -1,4 +1,5 @@
 import io
+from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
@@ -20,6 +21,7 @@ from handlers.commands import (
     manage_users_keyboard,
     user_detail_keyboard,
     expiry_keyboard,
+    auto_remove_keyboard,
     is_super_admin,
     is_full_admin,
     is_authorized,
@@ -33,8 +35,10 @@ RESTRICTED_EXACT = {
     "settings_menu", "settings_cycle_autokick", "settings_toggle_welcome",
     "settings_toggle_cleanup", "settings_toggle_summary", "settings_toggle_leave",
     "cat_add_start", "set_category_start", "pending_approvals",
+    "autoremove_menu", "autoremove_enable", "autoremove_disable", "autoremove_analyze",
+    "settings_cycle_autowhitelist",
 }
-RESTRICTED_PREFIXES = ("cat_rename_start:", "cat_delete:", "assign_category:", "pending_approve:", "pending_reject:", "expiry:")
+RESTRICTED_PREFIXES = ("cat_rename_start:", "cat_delete:", "assign_category:", "pending_approve:", "pending_reject:", "expiry:", "autoremove_mode:", "autoremove_grace:")
 
 SUPER_ONLY_PREFIXES = ("manage_users_menu", "add_user_start", "user_info:", "remove_user:")
 
@@ -630,14 +634,89 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⚙️ Settings for *{title_md}*", parse_mode="Markdown", reply_markup=settings_keyboard(group_id)
         )
 
-    elif data == "settings_cycle_autokick":
+    elif data == "settings_cycle_autowhitelist":
         s = storage.get_group_settings(group_id)
-        order = ["off", "instant", "grace"]
-        idx = order.index(s["auto_kick"])
-        storage.set_group_setting(group_id, "auto_kick", order[(idx + 1) % len(order)])
+        order = [-1, 0, 10, 30, 60, 360, 1440]  # OFF, Instant, 10m, 30m, 1h, 6h, 24h
+        current = s["auto_whitelist_minutes"]
+        idx = order.index(current) if current in order else 0
+        storage.set_group_setting(group_id, "auto_whitelist_minutes", order[(idx + 1) % len(order)])
         await safe_edit(query, 
             f"⚙️ Settings for *{title_md}*", parse_mode="Markdown", reply_markup=settings_keyboard(group_id)
         )
+
+    elif data == "autoremove_menu":
+        s = storage.get_group_settings(group_id)
+        await safe_edit(query, 
+            f"🚨 *Auto-Remove* settings for *{title_md}*\n\n"
+            "Members not on the whitelist get removed automatically according to this.",
+            parse_mode="Markdown",
+            reply_markup=auto_remove_keyboard(group_id)
+        )
+
+    elif data == "autoremove_enable":
+        s = storage.get_group_settings(group_id)
+        # Turning it on for the first time defaults to Instant; if they'd
+        # previously used Grace mode, restore that instead of losing it.
+        storage.set_group_setting(group_id, "auto_kick", "instant")
+        await safe_edit(query, 
+            f"🚨 *Auto-Remove* settings for *{title_md}*", parse_mode="Markdown",
+            reply_markup=auto_remove_keyboard(group_id)
+        )
+
+    elif data == "autoremove_disable":
+        storage.set_group_setting(group_id, "auto_kick", "off")
+        await safe_edit(query, 
+            f"🔴 Auto-Remove fully turned *OFF* for *{title_md}*. No members will be auto-removed.",
+            parse_mode="Markdown",
+            reply_markup=auto_remove_keyboard(group_id)
+        )
+
+    elif data.startswith("autoremove_mode:"):
+        mode = data.split(":", 1)[1]
+        storage.set_group_setting(group_id, "auto_kick", mode)
+        await safe_edit(query, 
+            f"🚨 *Auto-Remove* settings for *{title_md}*", parse_mode="Markdown",
+            reply_markup=auto_remove_keyboard(group_id)
+        )
+
+    elif data.startswith("autoremove_grace:"):
+        minutes = int(data.split(":", 1)[1])
+        storage.set_group_setting(group_id, "grace_minutes", minutes)
+        storage.set_group_setting(group_id, "auto_kick", "grace")
+        await safe_edit(query, 
+            f"🚨 *Auto-Remove* settings for *{title_md}*", parse_mode="Markdown",
+            reply_markup=auto_remove_keyboard(group_id)
+        )
+
+    elif data == "autoremove_analyze":
+        s = storage.get_group_settings(group_id)
+        tracked = storage.get_tracked_members(group_id)
+        allowed = storage.get_allowed_ids(group_id)
+        unverified = storage.get_unverified_members(group_id)
+        log = storage.get_removed_log(group_id)
+
+        now = datetime.now(timezone.utc)
+        last_7d = 0
+        for entry in log:
+            try:
+                ts = datetime.fromisoformat(entry.get("removed_at", ""))
+                if (now - ts).days <= 7:
+                    last_7d += 1
+            except (ValueError, TypeError):
+                continue
+
+        mode_label = {"off": "OFF", "instant": "INSTANT", "grace": f"GRACE ({s['grace_minutes']}m)"}[s["auto_kick"]]
+
+        text = (
+            f"📊 *Auto-Remove analysis — {title_md}*\n\n"
+            f"• Current mode: {mode_label}\n"
+            f"• Tracked members: {len(tracked)}\n"
+            f"• Whitelisted: {len(allowed)}\n"
+            f"• ⚠️ Currently unauthorized (not whitelisted): {len(unverified)}\n"
+            f"• 🗑️ Total removed (all-time): {len(log)}\n"
+            f"• 🗑️ Removed in last 7 days: {last_7d}\n"
+        )
+        await safe_edit(query, text, parse_mode="Markdown", reply_markup=auto_remove_keyboard(group_id))
 
     elif data == "settings_toggle_welcome":
         s = storage.get_group_settings(group_id)
