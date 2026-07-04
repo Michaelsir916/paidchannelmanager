@@ -175,8 +175,36 @@ def done_keyboard():
     ])
 
 
+def expiry_keyboard():
+    """Ask how long the newly-queued IDs should stay whitelisted."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("♾️ Lifetime (no expiry)", callback_data="expiry:lifetime")],
+        [
+            InlineKeyboardButton("7 days", callback_data="expiry:7"),
+            InlineKeyboardButton("30 days", callback_data="expiry:30"),
+            InlineKeyboardButton("90 days", callback_data="expiry:90"),
+        ],
+        [InlineKeyboardButton("📅 Custom date & time", callback_data="expiry:custom")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="cancel_state")],
+    ])
+
+
 def back_only_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="cancel_state")]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Back", callback_data="cancel_state")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="cancel_state")],
+    ])
+
+
+def expiry_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("♾️ Lifetime (no expiry)", callback_data="expiry:lifetime")],
+        [InlineKeyboardButton("📅 7 days", callback_data="expiry:7"),
+         InlineKeyboardButton("📅 30 days", callback_data="expiry:30")],
+        [InlineKeyboardButton("📅 90 days", callback_data="expiry:90")],
+        [InlineKeyboardButton("🗓️ Custom date/time", callback_data="expiry:custom")],
+        [InlineKeyboardButton("⬅️ Cancel (discard these IDs)", callback_data="expiry:discard")],
+    ])
 
 
 def settings_keyboard(chat_id):
@@ -213,6 +241,7 @@ def manage_users_keyboard():
         keyboard.append([InlineKeyboardButton(label, callback_data=f"user_info:{uid}")])
 
     keyboard.append([InlineKeyboardButton("➕ Add User", callback_data="add_user_start")])
+    keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="refresh_groups")])
     keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="cancel_state")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -449,15 +478,64 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        storage.add_allowed_ids(group_id, [new_id])
-        context.user_data["added_count"] = context.user_data.get("added_count", 0) + 1
-        count = context.user_data["added_count"]
+        existing = storage.get_allowed_ids(group_id)
+        pending = context.user_data.setdefault("pending_add_ids", [])
+
+        if new_id in existing:
+            await update.message.reply_text(
+                f"⚠️ ID `{new_id}` is *already added* to the whitelist.\n\n"
+                "Send another ID, or press Done below:",
+                parse_mode="Markdown",
+                reply_markup=done_keyboard()
+            )
+            return
+
+        if new_id in pending:
+            await update.message.reply_text(
+                f"⚠️ ID `{new_id}` is already queued in this session.\n\n"
+                "Send another ID, or press Done below:",
+                parse_mode="Markdown",
+                reply_markup=done_keyboard()
+            )
+            return
+
+        pending.append(new_id)
+        context.user_data["added_count"] = len(pending)
 
         await update.message.reply_text(
-            f"✅ ID `{new_id}` saved. (Added so far this session: {count})\n\n"
+            f"✅ ID `{new_id}` queued. (Queued so far this session: {len(pending)})\n\n"
             "Send another ID if you have more, or press Done below:",
             parse_mode="Markdown",
             reply_markup=done_keyboard()
+        )
+        return
+
+    # ---------- Custom expiry date for pending add ----------
+    if state == "adding_custom_expiry":
+        expires_at = timeutils.parse_ist_to_utc_iso(text)
+        if not expires_at:
+            await update.message.reply_text(
+                "⚠️ Couldn't understand that date. Send it like `25-12-2026` or "
+                "`25-12-2026 23:59` (IST), or press Back.",
+                parse_mode="Markdown",
+                reply_markup=back_only_keyboard()
+            )
+            return
+
+        pending = context.user_data.get("pending_add_ids", [])
+        context.user_data["state"] = None
+        context.user_data["pending_add_ids"] = []
+        context.user_data["added_count"] = 0
+
+        if pending:
+            storage.add_allowed_ids(group_id, pending, expires_at=expires_at)
+
+        display = timeutils.to_ist_dual(expires_at)
+        await update.message.reply_text(
+            f"🎉 Added {len(pending)} ID(s) for *{escape_md(storage.get_group_title(group_id))}*.\n"
+            f"⏳ Expires: {display}",
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard(is_full, is_super)
         )
         return
 
