@@ -63,14 +63,18 @@ def group_list_keyboard(user_id):
     if not own_groups:
         keyboard.append([InlineKeyboardButton("⚠️ No groups found yet", callback_data="noop")])
 
+    keyboard.append([InlineKeyboardButton("🔄 Refresh list", callback_data="refresh_groups")])
     keyboard.append([InlineKeyboardButton("🏷️ Manage Categories", callback_data="manage_categories")])
 
     if is_super:
         keyboard.append([InlineKeyboardButton(f"🌐 Other Admins' Groups ({len(other_groups)})", callback_data="open_category:others")])
         count = len(storage.get_managed_admins())
         keyboard.append([InlineKeyboardButton(f"👥 Users ({count})", callback_data="manage_users_menu")])
+        keyboard.append([
+            InlineKeyboardButton("🗄️ Backup Now", callback_data="backup_now"),
+            InlineKeyboardButton("♻️ Restore Backup", callback_data="restore_backup_start"),
+        ])
 
-    keyboard.append([InlineKeyboardButton("🔄 Refresh list", callback_data="refresh_groups")])
     keyboard.append([InlineKeyboardButton("🆘 Support", callback_data="show_support")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -142,28 +146,34 @@ def set_category_keyboard(chat_id):
 def main_menu_keyboard(is_full=True, is_super=False):
     keyboard = []
 
+    # ---------- Member Management ----------
     if is_full:
         keyboard.append([
             InlineKeyboardButton("➕ Add Members", callback_data="add_members_start"),
-            InlineKeyboardButton("📥 Bulk Import", callback_data="bulk_import_start"),
+            InlineKeyboardButton("➖ Remove a Member", callback_data="remove_member_start"),
         ])
         keyboard.append([
-            InlineKeyboardButton("➖ Remove a Member", callback_data="remove_member_start"),
+            InlineKeyboardButton("📥 Bulk Import", callback_data="bulk_import_start"),
             InlineKeyboardButton("📤 Export List", callback_data="export_allowed"),
         ])
         keyboard.append([InlineKeyboardButton("🚫 Remove Unauthorized Members", callback_data="remove_unauthorized")])
-        keyboard.append([InlineKeyboardButton("📝 Pending Approvals", callback_data="pending_approvals")])
-        keyboard.append([InlineKeyboardButton("🏷️ Set Category", callback_data="set_category_start")])
 
+    # ---------- Approvals & Monitoring ----------
+    if is_full:
+        keyboard.append([InlineKeyboardButton("📝 Pending Approvals", callback_data="pending_approvals")])
     keyboard.append([InlineKeyboardButton("👀 Unverified Members", callback_data="unverified_members")])
-    keyboard.append([InlineKeyboardButton("💤 Inactivity Report", callback_data="inactivity_report")])
-    keyboard.append([InlineKeyboardButton("📊 Removal Report", callback_data="removal_report")])
     keyboard.append([InlineKeyboardButton("🔍 Search Member", callback_data="search_start")])
 
+    # ---------- Reports ----------
+    keyboard.append([InlineKeyboardButton("💤 Inactivity Report", callback_data="inactivity_report")])
+    keyboard.append([InlineKeyboardButton("📊 Removal Report", callback_data="removal_report")])
+
+    # ---------- Setup ----------
     if is_full:
+        keyboard.append([InlineKeyboardButton("🏷️ Set Category", callback_data="set_category_start")])
         keyboard.append([InlineKeyboardButton("⚙️ Settings", callback_data="settings_menu")])
 
-    keyboard.append([InlineKeyboardButton("⬅️ Back (Change Group)", callback_data="change_group")])
+    # ---------- Navigation ----------
     keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="change_group")])
     keyboard.append([InlineKeyboardButton("🆘 Support", callback_data="show_support")])
     return InlineKeyboardMarkup(keyboard)
@@ -274,6 +284,13 @@ def user_detail_keyboard(uid):
         [InlineKeyboardButton("🗑️ Remove Access", callback_data=f"remove_user:{uid}")],
         [InlineKeyboardButton("⬅️ Back", callback_data="manage_users_menu")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="cancel_state")],
+    ])
+
+
+def restore_confirm_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Confirm Restore (overwrite current data)", callback_data="restore_confirm")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="restore_cancel")],
     ])
 
 
