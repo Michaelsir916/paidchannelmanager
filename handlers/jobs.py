@@ -118,27 +118,31 @@ async def auto_cleanup_callback(context: ContextTypes.DEFAULT_TYPE):
             await send_alert(context.bot, f"⚠️ Auto-cleanup failed for group `{chat_id}`: {e}")
 
 
+def build_backup_zip():
+    """Zips every data file in DATA_DIR and returns (BytesIO buffer, filename)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fname in os.listdir(DATA_DIR):
+            fpath = os.path.join(DATA_DIR, fname)
+            if os.path.isfile(fpath) and fname.endswith(".json"):
+                zf.write(fpath, arcname=fname)
+    buf.seek(0)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return buf, f"backup_{stamp}.zip"
+
+
 async def auto_backup_callback(context: ContextTypes.DEFAULT_TYPE):
     """Runs every 2 hours. Zips every data file and posts it to the backup channel."""
     if not BACKUP_CHANNEL_ID:
         return
 
     try:
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for fname in os.listdir(DATA_DIR):
-                fpath = os.path.join(DATA_DIR, fname)
-                if os.path.isfile(fpath):
-                    zf.write(fpath, arcname=fname)
-        buf.seek(0)
-
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        buf.name = f"backup_{stamp}.zip"
+        buf, filename = build_backup_zip()
 
         await context.bot.send_document(
             chat_id=BACKUP_CHANNEL_ID,
             document=buf,
-            filename=buf.name,
+            filename=filename,
             caption=f"🗄️ Automatic backup\n🕒 {timeutils.to_ist_dual(timeutils.now_utc_iso())}"
         )
     except Exception as e:
