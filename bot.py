@@ -15,7 +15,7 @@ from config import BOT_TOKEN
 from handlers.commands import start, myid, register_group, handle_admin_message
 from handlers.buttons import button_callback
 from handlers.member_tracker import track_chat_member, track_my_chat_member
-from handlers.documents import handle_bulk_document
+from handlers.documents import handle_bulk_document, handle_restore_document
 from handlers.jobs import daily_summary_callback, auto_cleanup_callback, auto_backup_callback
 from handlers.error_handler import error_handler
 
@@ -40,6 +40,12 @@ def main():
     app.add_handler(MessageHandler(
         filters.Document.TXT & filters.ChatType.PRIVATE,
         handle_bulk_document
+    ))
+
+    # Restore-from-backup .zip upload - private chat only
+    app.add_handler(MessageHandler(
+        filters.Document.FileExtension("zip") & filters.ChatType.PRIVATE,
+        handle_restore_document
     ))
 
     # Admin/viewer text messages (add/remove IDs, search) - private chat only
