@@ -69,7 +69,7 @@ async def safe_edit(query, text, **kwargs):
 
 def build_direct_link(user_id, username):
     if username:
-        return f"https://t.me/{username}"
+        return f"https://t.me/{escape_md(username)}"
     return f"tg://user?id={user_id}"
 
 
@@ -571,7 +571,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🆔 ID: `{uid}`\n"
                 f"🔗 Chat: {link}\n"
                 f"🕒 Joined: {join_display}\n"
-                f"📨 Invite link: {invite_link}"
+                f"📨 Invite link: `{invite_link}`"
             )
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("✅ Approve", callback_data=f"pending_approve:{group_id}:{uid}"),
@@ -644,7 +644,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"   ID: `{uid}`\n"
                 f"   Chat: {link}\n"
                 f"   Joined: {join_display}\n"
-                f"   Invite link: {invite_link}\n\n"
+                f"   Invite link: `{invite_link}`\n\n"
             )
 
         for chunk in _chunk_and_send(blocks):
