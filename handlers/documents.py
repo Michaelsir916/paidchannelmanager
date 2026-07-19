@@ -1,10 +1,22 @@
 import re
+import io
+import zipfile
 from collections import Counter
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from services import storage
-from handlers.commands import is_full_admin, is_super_admin, main_menu_keyboard, expiry_keyboard
+from handlers.commands import (
+    is_full_admin, is_super_admin, main_menu_keyboard, expiry_keyboard,
+    restore_confirm_keyboard,
+)
+
+# Only these exact filenames may be written during a restore - blocks zip-slip /
+# path traversal and stops an unrelated .zip from clobbering unexpected files.
+ALLOWED_RESTORE_FILES = {
+    "allowed_ids.json", "tracked_members.json", "removed_log.json",
+    "known_groups.json", "settings.json", "managed_admins.json", "categories.json",
+}
 
 
 async def handle_bulk_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -85,4 +97,60 @@ async def handle_bulk_document(update: Update, context: ContextTypes.DEFAULT_TYP
         "Choose how long they should stay whitelisted:",
         parse_mode="Markdown",
         reply_markup=expiry_keyboard()
+    )
+
+
+async def handle_restore_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    if not is_super_admin(user.id):
+        return
+
+    if update.effective_chat.type != "private":
+        return
+
+    if context.user_data.get("state") != "restoring_backup":
+        return
+
+    doc = update.message.document
+    if not doc:
+        return
+
+    tg_file = await doc.get_file()
+    file_bytes = await tg_file.download_as_bytearray()
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(file_bytes))
+    except zipfile.BadZipFile:
+        await update.message.reply_text("⚠️ That doesn't look like a valid .zip file. Please send the backup zip again.")
+        return
+
+    found = {}
+    skipped = []
+    for name in zf.namelist():
+        base = name.rsplit("/", 1)[-1]  # ignore any folder structure inside the zip
+        if base in ALLOWED_RESTORE_FILES:
+            found[base] = zf.read(name)
+        elif not name.endswith("/"):
+            skipped.append(base)
+
+    if not found:
+        await update.message.reply_text(
+            "⚠️ No recognizable backup data files (allowed_ids.json, settings.json, etc.) "
+            "were found in that zip. Restore cancelled."
+        )
+        return
+
+    context.user_data["restore_files"] = found
+
+    lines = [f"📦 Found {len(found)} data file(s) in the backup:"]
+    lines += [f"  • {name}" for name in sorted(found.keys())]
+    if skipped:
+        lines.append(f"\n(Ignored {len(skipped)} unrelated file(s) in the zip.)")
+    lines.append("\n⚠️ Confirm to *overwrite* current data with this backup.")
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=restore_confirm_keyboard()
     )
