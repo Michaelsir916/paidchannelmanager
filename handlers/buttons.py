@@ -1,13 +1,15 @@
 import io
+import os
 from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from config import SUPPORT_USERNAME
+from config import SUPPORT_USERNAME, DATA_DIR
 from services import storage, timeutils
 from services.mdutils import escape_md
 from services.group_service import remove_unauthorized_members, kick_single_member
+from handlers.jobs import build_backup_zip
 from handlers.commands import (
     main_menu_keyboard,
     done_keyboard,
@@ -22,6 +24,7 @@ from handlers.commands import (
     user_detail_keyboard,
     expiry_keyboard,
     auto_remove_keyboard,
+    restore_confirm_keyboard,
     is_super_admin,
     is_full_admin,
     is_authorized,
@@ -40,7 +43,10 @@ RESTRICTED_EXACT = {
 }
 RESTRICTED_PREFIXES = ("cat_rename_start:", "cat_delete:", "assign_category:", "pending_approve:", "pending_reject:", "expiry:", "autoremove_mode:", "autoremove_grace:")
 
-SUPER_ONLY_PREFIXES = ("manage_users_menu", "add_user_start", "user_info:", "remove_user:")
+SUPER_ONLY_PREFIXES = (
+    "manage_users_menu", "add_user_start", "user_info:", "remove_user:",
+    "backup_now", "restore_backup_start", "restore_confirm", "restore_cancel",
+)
 
 
 def _is_restricted(data):
@@ -111,6 +117,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = None
         context.user_data["pending_add_ids"] = []
         context.user_data["added_count"] = 0
+        context.user_data.pop("restore_files", None)
         group_id = context.user_data.get("selected_group")
         if group_id:
             title = storage.get_group_title(group_id)
@@ -273,6 +280,61 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Access revoked for user `{uid}`.\n\n👥 *Delegated users: {count}*",
             parse_mode="Markdown",
             reply_markup=manage_users_keyboard()
+        )
+        return
+
+    # ---------- Backup / Restore (super admin only) ----------
+    if data == "backup_now":
+        await query.answer("Building backup...")
+        try:
+            buf, filename = build_backup_zip()
+            await context.bot.send_document(
+                chat_id=query.message.chat_id,
+                document=buf,
+                filename=filename,
+                caption=f"🗄️ Manual backup\n🕒 {timeutils.to_ist_dual(timeutils.now_utc_iso())}"
+            )
+        except Exception as e:
+            await context.bot.send_message(chat_id=query.message.chat_id, text=f"⚠️ Backup failed: {e}")
+        return
+
+    if data == "restore_backup_start":
+        context.user_data["state"] = "restoring_backup"
+        await safe_edit(query, 
+            "♻️ Send the backup *.zip* file to restore.\n\n"
+            "⚠️ This will *overwrite* all current data (members, settings, categories, etc.) "
+            "once you confirm.",
+            parse_mode="Markdown",
+            reply_markup=back_only_keyboard()
+        )
+        return
+
+    if data == "restore_confirm":
+        pending = context.user_data.get("restore_files")
+        if not pending:
+            await safe_edit(query, "⚠️ No backup file pending. Please send the .zip again.", reply_markup=back_only_keyboard())
+            return
+
+        try:
+            for fname, content in pending.items():
+                with open(os.path.join(DATA_DIR, fname), "wb") as f:
+                    f.write(content)
+            context.user_data.pop("restore_files", None)
+            context.user_data["state"] = None
+            await safe_edit(query, 
+                f"✅ Restore complete. {len(pending)} file(s) restored.",
+                reply_markup=main_menu_keyboard(is_full, is_super)
+            )
+        except Exception as e:
+            await safe_edit(query, f"⚠️ Restore failed: {e}", reply_markup=back_only_keyboard())
+        return
+
+    if data == "restore_cancel":
+        context.user_data.pop("restore_files", None)
+        context.user_data["state"] = None
+        await safe_edit(query, 
+            "❌ Restore cancelled. No data was changed.",
+            reply_markup=group_list_keyboard(user.id)
         )
         return
 
@@ -497,13 +559,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for uid, info in unverified.items():
             username = info.get("username") or ""
+            full_name = info.get("full_name") or ""
             uname_display = f"@{escape_md(username)}" if username else "No username"
+            name_display = escape_md(full_name) if full_name else "Unknown"
             link = build_direct_link(uid, username)
             join_display = timeutils.to_ist_dual(info.get("join_time"))
             invite_link = info.get("invite_link") or "Not available"
 
             detail = (
-                f"👤 {uname_display}\n"
+                f"👤 {name_display} ({uname_display})\n"
                 f"🆔 ID: `{uid}`\n"
                 f"🔗 Chat: {link}\n"
                 f"🕒 Joined: {join_display}\n"
@@ -568,13 +632,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for i, (uid, info) in enumerate(unverified.items(), 1):
             username = info.get("username") or ""
+            full_name = info.get("full_name") or ""
             uname_display = f"@{escape_md(username)}" if username else "No username"
+            name_display = escape_md(full_name) if full_name else "Unknown"
             link = build_direct_link(uid, username)
             join_display = timeutils.to_ist_dual(info.get("join_time"))
             invite_link = info.get("invite_link") or "Not available (direct add / already in group)"
 
             blocks.append(
-                f"{i}. {uname_display}\n"
+                f"{i}. {name_display} ({uname_display})\n"
                 f"   ID: `{uid}`\n"
                 f"   Chat: {link}\n"
                 f"   Joined: {join_display}\n"
